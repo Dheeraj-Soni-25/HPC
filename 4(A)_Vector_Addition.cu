@@ -1,97 +1,92 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <cuda_runtime.h>
-#include <stdbool.h>
+#include<math.h>
+#include<time.h>
+#include<iostream>
+#include "cuda_runtime.h"
 
-__global__ void vectorAdd(int* a, int* b, int* c, int size)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < size) {
-        c[tid] = a[tid] + b[tid];
-    }
-}
-void vectorAddNormal(int* a, int* b, int* c, int size) {
-    for (int i = 0; i < size; i++) {
-        c[i] = a[i] + b[i];
-    }
-}
-// compare results
-bool verifyResults(int* c_cuda, int* c_normal, int size) {
-    for (int i = 0; i < size; i++) {
-        if (c_cuda[i] != c_normal[i]) {
-            return false;
+void cpuSum(int* A, int*B, int* C, int N)
+    {
+    for (int i=0; i<N; ++i)
+        {
+        C[i] = A[i] + B[i];
         }
     }
-    return true;
-}
-
-int main()
-{
-    int size = 1000000;
-    int* a, * b, * c_cuda, * c_normal;
-    int* dev_a, * dev_b, * dev_c;
-
-    // Allocate memory for CPU vectors
-    a = (int*)malloc(size * sizeof(int));
-    b = (int*)malloc(size * sizeof(int));
-    c_cuda = (int*)malloc(size * sizeof(int));
-    c_normal = (int*)malloc(size * sizeof(int));
-
-    // Generate random vector
-    for (int i = 0; i < size; i++) {
-        a[i] = rand() % 1000;
-        b[i] = rand() % 1000;
+    
+__global__ void kernel(int* A, int* B, int* C, int N)
+    {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i<N)
+        {
+        C[i] = A[i] + B[i];
+        }
     }
-
-    cudaMalloc((void**)&dev_a, size * sizeof(int));
-    cudaMalloc((void**)&dev_b, size * sizeof(int));
-    cudaMalloc((void**)&dev_c, size * sizeof(int));
-
-    cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-
-    //GPU
-    clock_t start_cuda, end_cuda;
-    start_cuda = clock();
-
-    int blockSize = 256;
-    int gridSize = (size + blockSize - 1) / blockSize;
-    vectorAdd<<<gridSize, blockSize>>>(dev_a, dev_b, dev_c, size);
+    
+void gpuSum(int* A, int* B, int* C, int N)
+    {
+    int threadsPerBlock = min(1024, N);
+    int blocksPerGrid = ceil(double(N)/double(threadsPerBlock));
+    kernel<<<blocksPerGrid, threadsPerBlock>>>(A, B, C, N);
+    }
+    
+bool isVectorEqual(int* A, int* B, int N)
+    {
+    for (int i=0; i<N; ++i)
+        {
+        if (A[i] != B[i])
+            {
+            return false;
+            }
+        }
+    return true;
+    }
+    
+int main()
+    {
+    int N = 2e7;
+    int *A, *B, *C, *D, *a, *b, *c;
+    int size = N * sizeof(int);
+    
+    A = (int*)malloc(size);
+    B = (int*)malloc(size);
+    C = (int*)malloc(size);
+    D = (int*)malloc(size);
+    
+    for (int i=0; i<N; ++i)
+        {
+        A[i] = rand()%1000;
+        B[i] = rand()%1000;
+        }
+        
+    clock_t start, end;
+    
+    start = clock();
+    cpuSum(A, B, C, N);
+    end = clock();
+    float timeTakenCPU = ((float)(end-start))/CLOCKS_PER_SEC;
+    
+    cudaMalloc(&a, size);
+    cudaMalloc(&b, size);
+    cudaMalloc(&c, size);
+    
+    cudaMemcpy(a, A, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(b, B, size, cudaMemcpyHostToDevice);
+    
+    start = clock();
+    gpuSum(a, b, c, N);
     cudaDeviceSynchronize();
-
-    end_cuda = clock();
-    double cuda_time = (double)(end_cuda - start_cuda) / CLOCKS_PER_SEC;
-
-    printf("Time using GPU: %f", cuda_time);
-
-    cudaMemcpy(c_cuda, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    cudaFree(dev_c);
-
-    //CPU
-    clock_t start_normal, end_normal;
-    start_normal = clock();
-    vectorAddNormal(a, b, c_normal, size);
-    end_normal = clock();
-    double normal_time = (double)(end_normal - start_normal) / CLOCKS_PER_SEC;
-
-    printf("\nTIme using CPU: %f ", normal_time);
-
-    bool is_correct = verifyResults(c_cuda, c_normal, size);
-    if(is_correct)
-        printf("\nOutput Match: True");
-    else
-        printf("\nOutput Match: False");
-
-    double speedup = normal_time / cuda_time;
-    printf("\nSpeedup factor: %f\n", speedup);
-
-    free(a);
-    free(b);
-    free(c_cuda);
-    free(c_normal);
-
-    return 0;
-}
+    cudaMemcpy(D, c, size, cudaMemcpyDeviceToHost);
+    end = clock();
+    float timeTakenGPU = ((float)(end-start))/CLOCKS_PER_SEC;
+    
+    cudaFree(a);
+    cudaFree(b);
+    cudaFree(c);
+    
+    bool success = isVectorEqual(C, D, N);
+    
+    printf("Vector Addition\n");
+    printf("--------------------\n");
+    printf("CPU Time: %f \n", timeTakenCPU);
+    printf("GPU Time: %f \n", timeTakenGPU);
+    printf("Speed Up: %f \n", timeTakenCPU/timeTakenGPU);
+    printf("Verification: %s \n", success ? "true":"false");
+    }
